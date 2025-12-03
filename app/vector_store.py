@@ -44,58 +44,46 @@ class PineconeSchemaVectorStore:
 
     # ----------------- internal helpers -----------------
 
-    def _embed(self, texts: List[str]) -> List[List[float]]:
+    def _embed_single(self, text: str) -> List[float]:
         """
-        Embed a list of texts using OpenAI embeddings.
-        NOTE: caller is responsible for not sending too many tokens at once.
+        Embed a SINGLE text using OpenAI embeddings.
+        This guarantees we stay within context limits.
         """
         resp = self.client.embeddings.create(
             model=self.settings.OPENAI_EMBED_MODEL,
-            input=texts,
+            input=[text],
         )
-        return [item.embedding for item in resp.data]
+        return resp.data[0].embedding
 
     def _ensure_index_populated(self) -> None:
         """
         Upload schema chunks to Pinecone if index is empty.
-        We do this in SMALL BATCHES to avoid hitting the
-        OpenAI 'max tokens per request' limit.
+        We embed ONE TABLE at a time to avoid hitting any token limits.
         """
         stats = self.index.describe_index_stats()
         if stats.get("total_vector_count", 0) > 0:
             print("[Pinecone] Index already populated.")
             return
 
-        print("[Pinecone] Uploading schema vectors in batches...")
-
-        # small batch size = fewer tokens per request
-        BATCH_SIZE = 10
+        print(f"[Pinecone] Uploading schema vectors for {len(self.chunks)} tables...")
 
         total = len(self.chunks)
-        for start in range(0, total, BATCH_SIZE):
-            end = min(start + BATCH_SIZE, total)
-            batch_chunks = self.chunks[start:end]
-            batch_texts = [chunk.text for chunk in batch_chunks]
+        for idx, chunk in enumerate(self.chunks, start=1):
+            # Embed this single table's text
+            emb = self._embed_single(chunk.text)
 
-            # Embed this small batch
-            embeddings = self._embed(batch_texts)
+            vector = {
+                "id": chunk.id,
+                "values": emb,
+                "metadata": {
+                    "text": chunk.text,
+                },
+            }
 
-            # Prepare vectors for this batch
-            vectors = []
-            for chunk, emb in zip(batch_chunks, embeddings):
-                vectors.append(
-                    {
-                        "id": chunk.id,
-                        "values": emb,
-                        "metadata": {
-                            "text": chunk.text,
-                        },
-                    }
-                )
+            self.index.upsert(vectors=[vector])
 
-            # Upsert this batch
-            self.index.upsert(vectors=vectors)
-            print(f"[Pinecone] Uploaded tables {start + 1}–{end} of {total}")
+            if idx % 10 == 0 or idx == total:
+                print(f"[Pinecone] Uploaded {idx}/{total} tables")
 
         print("[Pinecone] Upload complete.")
 
@@ -105,11 +93,11 @@ class PineconeSchemaVectorStore:
         """
         Semantic search over schema, returns SchemaChunks.
         """
-        # Single query => safe to embed directly
-        query_vec = self._embed([query])[0]
+        # Single query => embed once
+        emb = self._embed_single(query)
 
         res = self.index.query(
-            vector=query_vec,
+            vector=emb,
             top_k=top_k,
             include_metadata=True,
         )
