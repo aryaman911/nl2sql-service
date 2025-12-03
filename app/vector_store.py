@@ -15,7 +15,7 @@ class PineconeSchemaVectorStore:
     def __init__(self) -> None:
         self.settings = get_settings()
 
-        # Initialize Pinecone client
+        # Pinecone client
         self.pc = Pinecone(api_key=self.settings.PINECONE_API_KEY)
 
         # Create index if needed
@@ -23,11 +23,11 @@ class PineconeSchemaVectorStore:
         if self.settings.PINECONE_INDEX not in existing:
             self.pc.create_index(
                 name=self.settings.PINECONE_INDEX,
-                dimension=1536,  # for text-embedding-3-small
+                dimension=1536,  # text-embedding-3-small
                 metric="cosine",
                 spec=ServerlessSpec(
                     cloud="aws",
-                    region="us-east-1",  # adjust if needed
+                    region="us-east-1",
                 ),
             )
 
@@ -36,15 +36,19 @@ class PineconeSchemaVectorStore:
         # OpenAI client
         self.client = OpenAI(api_key=self.settings.OPENAI_API_KEY)
 
-        # Load schema chunks
+        # Load schema chunks from maindata.sql (via schema_docs.py)
         self.chunks: List[SchemaChunk] = load_schema_chunks()
 
-        # Ensure Pinecone index is populated with schema vectors
+        # Ensure Pinecone has schema vectors
         self._ensure_index_populated()
 
     # ----------------- internal helpers -----------------
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
+        """
+        Embed a list of texts using OpenAI embeddings.
+        NOTE: caller is responsible for not sending too many tokens at once.
+        """
         resp = self.client.embeddings.create(
             model=self.settings.OPENAI_EMBED_MODEL,
             input=texts,
@@ -54,30 +58,45 @@ class PineconeSchemaVectorStore:
     def _ensure_index_populated(self) -> None:
         """
         Upload schema chunks to Pinecone if index is empty.
+        We do this in SMALL BATCHES to avoid hitting the
+        OpenAI 'max tokens per request' limit.
         """
         stats = self.index.describe_index_stats()
         if stats.get("total_vector_count", 0) > 0:
             print("[Pinecone] Index already populated.")
             return
 
-        print("[Pinecone] Uploading schema vectors...")
+        print("[Pinecone] Uploading schema vectors in batches...")
 
-        texts = [chunk.text for chunk in self.chunks]
-        embeddings = self._embed(texts)
+        # small batch size = fewer tokens per request
+        BATCH_SIZE = 10
 
-        vectors = []
-        for chunk, emb in zip(self.chunks, embeddings):
-            vectors.append(
-                {
-                    "id": chunk.id,
-                    "values": emb,
-                    "metadata": {
-                        "text": chunk.text,
-                    },
-                }
-            )
+        total = len(self.chunks)
+        for start in range(0, total, BATCH_SIZE):
+            end = min(start + BATCH_SIZE, total)
+            batch_chunks = self.chunks[start:end]
+            batch_texts = [chunk.text for chunk in batch_chunks]
 
-        self.index.upsert(vectors=vectors)
+            # Embed this small batch
+            embeddings = self._embed(batch_texts)
+
+            # Prepare vectors for this batch
+            vectors = []
+            for chunk, emb in zip(batch_chunks, embeddings):
+                vectors.append(
+                    {
+                        "id": chunk.id,
+                        "values": emb,
+                        "metadata": {
+                            "text": chunk.text,
+                        },
+                    }
+                )
+
+            # Upsert this batch
+            self.index.upsert(vectors=vectors)
+            print(f"[Pinecone] Uploaded tables {start + 1}–{end} of {total}")
+
         print("[Pinecone] Upload complete.")
 
     # ----------------- public API -----------------
@@ -86,6 +105,7 @@ class PineconeSchemaVectorStore:
         """
         Semantic search over schema, returns SchemaChunks.
         """
+        # Single query => safe to embed directly
         query_vec = self._embed([query])[0]
 
         res = self.index.query(
