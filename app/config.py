@@ -2,44 +2,37 @@ import os
 from functools import lru_cache
 
 
-class Settings:
+# app/config.py
+
+from pydantic import BaseSettings
+
+
+class Settings(BaseSettings):
+    """
+    Central config object for the nl2sql-service.
+
+    All values are read from environment variables.
+    On Render, set them in the dashboard.
+    """
+
     # OpenAI
     OPENAI_API_KEY: str
-    OPENAI_CHAT_MODEL: str = "gpt-4.1-mini"
-    OPENAI_EMBED_MODEL: str = "text-embedding-3-small"
+    OPENAI_MODEL: str = "gpt-4.1-mini"  # or whatever you picked
 
     # Pinecone
     PINECONE_API_KEY: str
-    PINECONE_INDEX: str = "nl2sql-schema"
+    PINECONE_INDEX: str = "nl2sql-schema-index"
+    PINECONE_CLOUD: str = "aws"         # used by the new Pinecone client
+    PINECONE_REGION: str = "us-east-1"  # adjust if your index is elsewhere
+    PINECONE_NAMESPACE: str = "default"
 
-    # Optional DB sanity-check URL (not used yet)
-    DB_URL: str | None = None
-
-    def __init__(self) -> None:
-        # Required
-        self.OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-        if not self.OPENAI_API_KEY:
-            raise RuntimeError("OPENAI_API_KEY is not set")
-
-        self.PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")
-        if not self.PINECONE_API_KEY:
-            raise RuntimeError("PINECONE_API_KEY is not set")
-
-        # Optional overrides
-        self.OPENAI_CHAT_MODEL = os.environ.get(
-            "OPENAI_CHAT_MODEL", self.OPENAI_CHAT_MODEL
-        )
-        self.OPENAI_EMBED_MODEL = os.environ.get(
-            "OPENAI_EMBED_MODEL", self.OPENAI_EMBED_MODEL
-        )
-        self.PINECONE_INDEX = os.environ.get(
-            "PINECONE_INDEX", self.PINECONE_INDEX
-        )
-
-        self.DB_URL = os.environ.get("DB_URL")
+    class Config:
+        # optional: if you want local .env support
+        env_file = ".env"
+        # prefix env vars like NL2SQL_OPENAI_API_KEY, NL2SQL_PINECONE_API_KEY, etc.
+        env_prefix = "NL2SQL_"
+        extra = "allow"  # ignore any extra env vars
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
-
+# This is what rag_sql.py and vector_store.py import.
+settings = Settings()
