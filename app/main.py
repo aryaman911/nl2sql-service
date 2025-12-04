@@ -1,47 +1,55 @@
-from fastapi import FastAPI, HTTPException
+# app/main.py
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import get_settings
-from .models import NL2SQLRequest, NL2SQLResponse
-from .vector_store import PineconeSchemaVectorStore
-from .rag_sql import NL2SQLPipeline
-
-settings = get_settings()
+from app.models import NL2SQLRequest, NL2SQLResponse
+from app.vector_store import PineconeSchemaVectorStore
+from app.rag_sql import generate_sql
 
 app = FastAPI(
-    title="NL2SQL RAG Service",
-    version="0.1.0",
-    description="Cloud microservice that converts natural language to SQL using RAG over schema in Pinecone.",
+    title="NL2SQL Service",
+    version="1.0.0",
 )
 
-# CORS (you can restrict origins later)
+# CORS – allow your Django frontend / backend origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Build vector store & pipeline once at startup
+# Global vector store (loads schema + Pinecone)
 vector_store = PineconeSchemaVectorStore()
-pipeline = NL2SQLPipeline(vector_store=vector_store)
-
-
-@app.post("/nl2sql", response_model=NL2SQLResponse)
-async def nl2sql_endpoint(payload: NL2SQLRequest) -> NL2SQLResponse:
-    question = payload.question.strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
-
-    try:
-        sql = pipeline.question_to_sql(question)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    return NL2SQLResponse(sql=sql)
 
 
 @app.get("/health")
-async def health_check():
+def health_check():
     return {"status": "ok"}
+
+
+@app.post("/nl2sql", response_model=NL2SQLResponse)
+def nl2sql(request: NL2SQLRequest) -> NL2SQLResponse:
+    """
+    Main endpoint called by Django's CareOpenAI.
+
+    It now understands roster_id and client_id and passes them
+    to the SQL generator so all queries can be scoped properly.
+    """
+    # Retrieve relevant schema chunks via vector search
+    schema_chunks = vector_store.search(request.question, top_k=8)
+
+    sql = generate_sql(
+        question=request.question,
+        schema_chunks=schema_chunks,
+        roster_id=request.roster_id,
+        client_id=request.client_id,
+    )
+
+    return NL2SQLResponse(
+        question=request.question,
+        roster_id=request.roster_id,
+        client_id=request.client_id,
+        sql=sql,
+    )
