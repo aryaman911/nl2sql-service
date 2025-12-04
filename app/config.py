@@ -1,38 +1,64 @@
-import os
-from functools import lru_cache
-
-
 # app/config.py
 
-from pydantic import BaseSettings
+import os
+from dataclasses import dataclass
 
 
-class Settings(BaseSettings):
+def _env(name: str, default=None, required: bool = False):
     """
-    Central config object for the nl2sql-service.
+    Helper to read environment variables.
 
-    All values are read from environment variables.
-    On Render, set them in the dashboard.
+    - If `required=True` and the var is missing, we raise a RuntimeError
+      so the service fails fast at startup.
+    - We also check for both bare names and NL2SQL_ prefixed names
+      for convenience.
+    """
+    # allow either NAME or NL2SQL_NAME
+    value = os.getenv(name)
+    if value is None:
+        value = os.getenv(f"NL2SQL_{name}")
+
+    if value is None:
+        if required and default is None:
+            raise RuntimeError(f"Missing required environment variable: {name}")
+        return default
+
+    return value
+
+
+@dataclass
+class Settings:
+    """
+    Simple config object for the nl2sql-service.
+
+    Attributes are in ALL_CAPS so existing code like
+    `settings.OPENAI_API_KEY` continues to work.
     """
 
-    # OpenAI
     OPENAI_API_KEY: str
-    OPENAI_MODEL: str = "gpt-4.1-mini"  # or whatever you picked
-
-    # Pinecone
+    OPENAI_MODEL: str
     PINECONE_API_KEY: str
-    PINECONE_INDEX: str = "nl2sql-schema-index"
-    PINECONE_CLOUD: str = "aws"         # used by the new Pinecone client
-    PINECONE_REGION: str = "us-east-1"  # adjust if your index is elsewhere
-    PINECONE_NAMESPACE: str = "default"
-
-    class Config:
-        # optional: if you want local .env support
-        env_file = ".env"
-        # prefix env vars like NL2SQL_OPENAI_API_KEY, NL2SQL_PINECONE_API_KEY, etc.
-        env_prefix = "NL2SQL_"
-        extra = "allow"  # ignore any extra env vars
+    PINECONE_INDEX: str
+    PINECONE_CLOUD: str
+    PINECONE_REGION: str
+    PINECONE_NAMESPACE: str
 
 
-# This is what rag_sql.py and vector_store.py import.
-settings = Settings()
+def get_settings() -> Settings:
+    """
+    Factory used by other modules (vector_store, rag_sql, etc.).
+    Reads from environment variables once and returns a Settings object.
+    """
+    return Settings(
+        OPENAI_API_KEY=_env("OPENAI_API_KEY", required=True),
+        OPENAI_MODEL=_env("OPENAI_MODEL", default="gpt-4.1-mini"),
+        PINECONE_API_KEY=_env("PINECONE_API_KEY", required=True),
+        PINECONE_INDEX=_env("PINECONE_INDEX", default="nl2sql-schema-index"),
+        PINECONE_CLOUD=_env("PINECONE_CLOUD", default="aws"),
+        PINECONE_REGION=_env("PINECONE_REGION", default="us-east-1"),
+        PINECONE_NAMESPACE=_env("PINECONE_NAMESPACE", default="default"),
+    )
+
+
+# Optional: module-level singleton for imports like `from app.config import settings`
+settings = get_settings()
