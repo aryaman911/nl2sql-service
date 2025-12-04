@@ -37,6 +37,7 @@ class Settings:
 
     OPENAI_API_KEY: str
     OPENAI_MODEL: str
+    OPENAI_EMBED_MODEL: str        # <--- NEW
     PINECONE_API_KEY: str
     PINECONE_INDEX: str
     PINECONE_CLOUD: str
@@ -52,6 +53,11 @@ def get_settings() -> Settings:
     return Settings(
         OPENAI_API_KEY=_env("OPENAI_API_KEY", required=True),
         OPENAI_MODEL=_env("OPENAI_MODEL", default="gpt-4.1-mini"),
+        # Default embedding model; override via env if you want.
+        OPENAI_EMBED_MODEL=_env(
+            "OPENAI_EMBED_MODEL",
+            default="text-embedding-3-small",
+        ),
         PINECONE_API_KEY=_env("PINECONE_API_KEY", required=True),
         PINECONE_INDEX=_env("PINECONE_INDEX", default="nl2sql-schema-index"),
         PINECONE_CLOUD=_env("PINECONE_CLOUD", default="aws"),
